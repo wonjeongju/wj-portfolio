@@ -1,0 +1,2165 @@
+/* =====================================================================
+   주원정 · Case File portfolio
+   Concept: 형광펜으로 밑줄 친 케이스 파일 (highlighter-marked case file)
+   See DESIGN.md for the full system.
+   ===================================================================== */
+
+/* ---- Tokens ---------------------------------------------------------- */
+:root {
+  /* SWAP-2: 강조색은 이 두 줄을 함께 바꾼다 (--marker + --marker-stroke의 fill 색) */
+  --marker: #ffd400;
+  /* 손으로 그은 형광펜 획 — 위아래 가장자리가 살짝 울퉁불퉁한 SVG.
+     preserveAspectRatio='none'이라 mark 길이에 맞게 늘어난다. */
+  --marker-stroke: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 56' preserveAspectRatio='none'%3E%3Cpath fill='%23ffd400' fill-opacity='0.85' d='M8 14C40 8 90 6 130 8 175 10 215 8 233 12L236 40C200 47 150 50 105 48 65 46 30 50 7 44Z'/%3E%3Cpath fill='%23ffd400' fill-opacity='0.5' d='M20 22C70 18 150 17 225 20L224 34C160 38 70 39 21 35Z'/%3E%3C/svg%3E");
+
+  --page: #faf9f4; /* 종이 느낌의 미지근한 웜 화이트 */
+  --ink: #131313;
+  --ink-2: #565550;
+  --hairline: #e8e6de;
+
+  --f1-bg: #ffffff;
+  --f1-ink: #131313;
+  --f1-hairline: #e8e6de;
+  /* 라이트박스는 --f1-ink 토큰과 무관하게 항상 어두운 배경 위에서 뜬다.
+     F1 섹션이 밝아져도 라이트박스 포커스 링은 이 리터럴 값으로 고정한다. */
+  --lightbox-ink: #f5f5f2;
+
+  /* spacing scale (4px base) */
+  --s1: 4px;  --s2: 8px;  --s3: 16px; --s4: 24px;
+  --s5: 40px; --s6: 64px; --s7: 96px; --s8: 160px;
+
+  --maxw: 1340px;
+  --measure: 70ch;
+
+  /* 히어로 높이 계산에서 빼는 상단 고정 영역(헤더 64 + 하단 괘선 1).
+     모바일에서는 칩 바(≈55)가 헤더 아래 붙으므로 아래 미디어쿼리에서 키운다. */
+  --header-h: 65px;
+
+  /* z-index scale */
+  --z-content: 0;
+  --z-rail: 10;
+  --z-nav: 20;
+  --z-lightbox: 30;
+  --z-skip: 40;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: 84px;
+}
+
+/* 종이 질감 — 매우 옅은 필름 그레인. 장식 패턴이 아니라 재질감. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  opacity: 0.035;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: "Pretendard Variable", Pretendard, -apple-system,
+    BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue",
+    "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  font-size: 17px;
+  line-height: 1.75;
+  font-weight: 400;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (min-width: 768px) {
+  body { font-size: 18px; }
+}
+
+img { display: block; max-width: 100%; height: auto; }
+
+a { color: inherit; }
+
+h1, h2, h3, h4 { font-weight: 800; letter-spacing: -0.02em; line-height: 1.12; text-wrap: balance; margin: 0; }
+p { margin: 0; text-wrap: pretty; }
+
+/* ---- Highlighter mark ------------------------------------------------ */
+/* 균일한 사각 밴드 대신 위아래가 살짝 우는 '손으로 그은 획'(SVG).
+   글자보다 조금 길게 삐져나가서(padding + negative margin) 진짜
+   형광펜처럼 오버슈트한다. */
+mark {
+  background-color: transparent;
+  background-image: var(--marker-stroke);
+  background-repeat: no-repeat;
+  background-position: 0 90%;
+  background-size: 100% 58%;
+  color: inherit;
+  padding: 0 0.14em;
+  margin: 0 -0.06em;
+  font-weight: inherit;
+  /* mark가 줄바꿈에 걸려 두 조각으로 나뉘어도 각 조각이 자기 획을
+     다시 그리게 한다 — 아니면 뒷조각은 획 없이 맨글자로 보인다. */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* Only when JS is on AND motion allowed do we sweep from 0 → 100% */
+@media (prefers-reduced-motion: no-preference) {
+  html.js mark {
+    background-size: 0% 58%;
+    transition: background-size 0.5s var(--ease-out);
+  }
+  html.js mark.is-marked { background-size: 100% 58%; }
+}
+
+/* numbers get tabular figures + strong weight (never oversized) */
+.num { font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: -0.01em; }
+
+/* ---- Global focus ---------------------------------------------------- */
+:where(a, button, [tabindex], summary, dialog):focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 1px;
+}
+.on-dark :focus-visible,
+.filmstrip:focus-visible { outline-color: var(--f1-ink); }
+/* 라이트박스는 F1 밝기 변경과 무관하게 상시 어두운 모달이므로 별도 리터럴 토큰 사용 */
+.lightbox :focus-visible { outline-color: var(--lightbox-ink); }
+
+/* ---- Skip link ------------------------------------------------------- */
+.skip {
+  position: fixed;
+  top: var(--s2);
+  left: var(--s2);
+  z-index: var(--z-skip);
+  background: var(--ink);
+  color: var(--page);
+  padding: 12px 18px;
+  font-weight: 700;
+  border-radius: 4px;
+  transform: translateY(-160%);
+  transition: transform 0.18s var(--ease-out);
+}
+.skip:focus { transform: translateY(0); }
+
+/* ---- Utilities ------------------------------------------------------- */
+/* 시각적으로는 감추되 문서 구조·스크린리더에는 남기는 헤딩용.
+   상세 페이지 블록에 보이지 않는 h2를 넣어 h1 → 본문으로 건너뛰던
+   아웃라인을 메운다(디자인은 그대로). */
+.vh {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* 인라인 스타일에서 뽑아낸 상단 여백 유틸(토큰 스케일에 맞춤) */
+.mt-s3 { margin-top: var(--s3); }
+.mt-s4 { margin-top: var(--s4); }
+.mt-s5 { margin-top: var(--s5); }
+.mt-32 { margin-top: 32px; } /* 토큰 밖 값 — 기존 렌더 유지용 */
+
+/* ---- Shell ----------------------------------------------------------- */
+.wrap {
+  width: 100%;
+  max-width: var(--maxw);
+  margin-inline: auto;
+  /* v9: 양옆이 너무 비어 보여 안쪽 패딩을 줄였다(64→48). 본문 줄길이는
+     .prose / .section-head의 --measure(70ch)가 따로 잡으므로, 폭이 넓어져도
+     읽는 줄이 길어지지는 않는다. */
+  padding-inline: clamp(18px, 3.6vw, 48px);
+}
+
+/* ---- Header ---------------------------------------------------------- */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-nav);
+  background: color-mix(in srgb, var(--page) 88%, transparent);
+  backdrop-filter: saturate(1.1) blur(8px);
+  border-bottom: 1px solid var(--hairline);
+}
+.site-header .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  min-height: 64px;
+}
+.brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brand .en { color: var(--ink-2); font-weight: 600; font-size: 0.82em; }
+.site-nav { display: none; }
+.site-nav ul {
+  display: flex;
+  gap: clamp(14px, 2vw, 28px);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.site-nav a {
+  text-decoration: none;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 0.94rem;
+  padding: 8px 2px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  transition: color 0.15s ease, background-size 0.2s var(--ease-out);
+  background-image: linear-gradient(var(--marker), var(--marker));
+  background-repeat: no-repeat;
+  background-position: 0 calc(100% - 9px);
+  background-size: 0% 3px;
+}
+.site-nav a:hover,
+.site-nav a:focus-visible {
+  color: var(--ink);
+  background-size: 100% 3px;
+}
+/* 현재 섹션 표시 — 기존 hover 형광펜 밑줄을 상시 적용(새 시각 언어 없이
+   상태만 확장). JS 스크롤스파이가 aria-current="location"을 붙인다. */
+.site-nav a[aria-current="location"] {
+  color: var(--ink);
+  background-size: 100% 3px;
+}
+@media (min-width: 768px) {
+  .site-nav { display: block; }
+}
+
+/* ---- Mobile anchor chips (A2) ---------------------------------------- */
+/* 데스크톱 nav가 사라지는 구간(<768px)에서만 뜨는 가로 스크롤 칩 바.
+   햄버거(탭 → 열기 → 고르기)와 달리 목차가 항상 보인 채로 한 번에 이동한다.
+   sticky 헤더 안에 있으므로 스크롤 내내 따라다닌다. */
+.chipbar { display: none; }
+@media (max-width: 767.98px) {
+  .chipbar {
+    display: block;
+    border-top: 1px solid var(--hairline);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chipbar::-webkit-scrollbar { display: none; }
+  .chipbar ul {
+    display: flex;
+    gap: var(--s2);
+    list-style: none;
+    margin: 0;
+    padding: 8px clamp(20px, 5vw, 64px);
+    width: max-content;
+  }
+  .chipbar a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 38px;
+    padding: 0 14px;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: var(--page);
+    color: var(--ink-2);
+    font-size: 0.88rem;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+  }
+  .chipbar a:active { background: color-mix(in srgb, var(--marker) 24%, var(--page)); }
+  /* 스크롤스파이가 붙이는 현재 섹션 표시 — nav 밑줄과 같은 형광펜 언어 */
+  .chipbar a[aria-current="location"] {
+    color: var(--ink);
+    border-color: var(--ink);
+    background: color-mix(in srgb, var(--marker) 62%, var(--page));
+  }
+  /* 헤더(64) + 칩 바(55)만큼 앵커 착지점을 내린다 */
+  html { scroll-padding-top: 128px; }
+  /* 히어로도 같은 만큼 낮춰 첫 화면이 폴드를 넘지 않게 한다(64 + 55 + 1) */
+  :root { --header-h: 120px; }
+}
+
+/* ---- Section rhythm -------------------------------------------------- */
+section { position: relative; }
+.section { padding-block: clamp(44px, 5.6vw, 80px); }
+.section + .section { border-top: 1px solid var(--hairline); }
+/* v9: 이전에는 케이스 헤딩을 일부러 첫 화면에 걸쳤으나, 첫 화면은
+   히어로만 보이는 편이 낫다고 판단해 되돌렸다(일반 섹션 리듬 사용). */
+
+.section-head { max-width: var(--measure); margin-bottom: var(--s5); }
+.section-head h2 {
+  font-size: clamp(1.5rem, 2.6vw, 1.8rem);
+  letter-spacing: -0.035em;
+}
+.section-head .lead {
+  margin-top: var(--s3);
+  color: var(--ink-2);
+  font-size: 1.05rem;
+}
+.kicker {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  margin-bottom: var(--s3);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* 섹션마다 붙는 작은 형광펜 획 — 이 컨셉만의 서명 */
+.kicker::before {
+  content: "";
+  width: 20px;
+  height: 9px;
+  background: var(--marker);
+  transform: skewX(-14deg);
+}
+
+/* ---- Hero ------------------------------------------------------------ */
+/* 이전 버전들처럼 첫 화면을 꽉 채움(브랜드 권한: "Single-purpose
+   viewports — one dominant idea per fold"). 스크롤재킹/핀 고정은
+   아님 — 그냥 첫 섹션 높이를 뷰포트에 맞추고 내용을 세로 중앙 정렬. */
+/* 첫 화면은 정확히 한 화면. 아래 케이스가 걸쳐 보이면 "한 덩어리"라는
+   인상이 깨진다. 내용은 위에서 쌓지 않고 화면 아래에 붙인다 —
+   위쪽 여백이 「남은 공간」이 아니라 「비워둔 공간」으로 읽힌다. */
+.hero {
+  position: relative;
+  overflow: hidden;
+  /* 화면 높이에서 조금 덜어낸다. 덜어내는 양(40px)은 다음 섹션의 상단
+     패딩 최소값(44px)보다 작아야 케이스 킥커가 폴드 위로 안 올라온다. */
+  min-height: calc(100vh - var(--header-h) - 40px);
+  min-height: calc(100svh - var(--header-h) - 40px);
+  display: flex;
+  flex-direction: column;
+  /* v9: 아래로 붙이던 정렬(flex-end)을 위로. 중앙 정렬도 여전히 낮아
+     보여서, 헤더 바로 아래에서 시작하되 숨 쉴 만큼만 띄운다.
+     남는 공간은 아래에 몰리고, 그게 폴드 앞의 여백이 된다. */
+  justify-content: flex-start;
+  padding-top: clamp(28px, 7vh, 84px);
+  padding-bottom: clamp(24px, 4vh, 64px);
+}
+.hero-in { position: relative; z-index: 2; width: 100%; }
+/* v9: 히어로가 화면 높이를 실제로 쓰게 한다. 내용을 위로 붙이면 아래가
+   크게 비는데, 여백을 줄이는 대신 두 칸을 세로로 늘려 채운다. */
+@media (min-width: 900px) {
+  .hero-in { flex: 1; display: flex; flex-direction: column; }
+}
+.hero-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  list-style: none;
+  margin: clamp(20px, 3.6vh, 44px) 0 0;
+  padding: 0;
+}
+.hero-tags li {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: color-mix(in srgb, #fff 55%, transparent);
+}
+.hero h1 {
+  /* v9: 헤드라인이 두 절로 길어졌다. 절마다 한 줄에 들어가야 "찾고, /
+     만듭니다."의 대구가 살아서, 한 줄짜리 카피 때보다 크기를 낮춘다. */
+  font-size: clamp(1.75rem, 4.6vw, 4.4rem);
+  font-weight: 870; /* Pretendard Variable — 디스플레이는 본문보다 확실히 무겁게 */
+  letter-spacing: -0.025em; /* 한글은 -0.04em부터 받침·인접 글자가 닿기 시작한다 */
+  line-height: 1.05;
+}
+.hero-sub {
+  margin-top: clamp(16px, 2.8vh, 32px);
+  max-width: 62ch;
+  color: var(--ink-2);
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  line-height: 1.6;
+}
+/* 서류철 상단의 '폴더 탭' — 점+선 아이브로우 대신 이 컨셉만의 모티프.
+   노란 사다리꼴 탭이 잉크색 상단 괘선 위에 물려 있다. */
+.hero-filerow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  margin-bottom: clamp(28px, 5.4vh, 64px);
+  border-bottom: 1px solid var(--ink);
+}
+.hero-filerow .tab {
+  background: var(--marker);
+  clip-path: polygon(0 100%, 9px 0, calc(100% - 9px) 0, 100% 100%);
+  padding: 7px 22px 6px;
+  color: var(--ink);
+  font-weight: 800;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+}
+
+/* Ledger (hero stat evidence) — v5: 세로 4행 → 가로 3열, 숫자 위/라벨 아래 */
+/* 3등분 그리드로 두면 각 칸이 폭을 반씩 남겨서 숫자 세 개가 흩어진다.
+   내용 폭에 맞춰 붙여야 「한 덩어리」로 읽힌다. */
+.ledger {
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--ink);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3) clamp(28px, 3.6vw, 52px);
+}
+@media (max-width: 639px) {
+  .ledger { gap: var(--s3) var(--s5); }
+}
+.ledger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 2px 2px;
+  text-decoration: none;
+  color: inherit;
+  min-height: 44px;
+  transition: background-color 0.2s var(--ease-out);
+}
+.ledger-row:hover { background-color: color-mix(in srgb, var(--marker) 8%, transparent); }
+.ledger-row:hover .ledger-label { text-decoration: underline; text-underline-offset: 3px; }
+.ledger-num {
+  font-size: clamp(2.4rem, 5vw, 3.4rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.ledger-label { font-weight: 700; }
+
+/* Ledger 아래 검증 링크 — Contact에서 이동한 샤오홍슈 실물 확인 도선 */
+.hero-verify {
+  margin-top: clamp(24px, 4.2vh, 52px);
+  font-weight: 700;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+.hero-verify a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  color: var(--ink);
+  border-bottom: 2px solid var(--marker);
+  padding: 4px 2px;
+  min-height: 44px;
+}
+.hero-verify a .arw { transition: transform 0.18s var(--ease-out); }
+.hero-verify a:hover .arw { transform: translateX(3px); }
+
+/* ---- Evidence figure ------------------------------------------------- */
+/* 흰 바탕 + 1px 헤어라인(클립아트 느낌) 대신, 테두리 없이 낮게 뜬
+   앰비언트 그림자 — 종이 위에 놓인 실물 증거 사진처럼. */
+figure.evidence { margin: 0; }
+.evidence img {
+  width: 100%;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgba(19, 19, 19, 0.07),
+    0 8px 22px rgba(19, 19, 19, 0.08);
+}
+
+/* 인덱스의 증거 사진들은 살짝 비뚤게 붙어 있고(테이프 포함),
+   호버하면 반듯해지며 떠오른다. */
+.case-media .zoom,
+.more-item .zoom {
+  transform: rotate(-0.5deg);
+  transition: transform 0.25s var(--ease-out);
+}
+.case-media figure:nth-child(even) .zoom { transform: rotate(0.45deg); }
+/* 호버 시 반듯해지며 뜨고(-2px), 그 위에 커서 추적 마이크로 틸트
+   (±2.5° 하드캡, JS가 --tiltX/--tiltY를 갱신; 미갱신 시 0 = 기존 동작). */
+.case-media .zoom:hover,
+.more-item .zoom:hover,
+.case-media .zoom:focus-visible,
+.more-item .zoom:focus-visible {
+  transform: perspective(800px) rotateX(var(--tiltX, 0deg)) rotateY(var(--tiltY, 0deg)) translateY(-2px);
+}
+
+/* 형광펜색 반투명 테이프 — 증거를 서류에 '붙여 둔' 디테일 */
+.case-media .zoom::before,
+.more-item .zoom::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  width: 62px;
+  height: 19px;
+  transform: translateX(-50%) rotate(-2deg);
+  background: color-mix(in srgb, var(--marker) 42%, rgba(255, 255, 255, 0.4));
+  box-shadow: 0 1px 2px rgba(19, 19, 19, 0.08);
+  z-index: 1;
+}
+.evidence figcaption {
+  margin-top: var(--s2);
+  color: var(--ink-2);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.evidence figcaption .src { color: var(--ink); font-weight: 700; }
+
+/* 본문 안 시장 수치의 출처 표기 — 주장보다 확실히 약하게 */
+.src-note {
+  margin-left: 4px;
+  font-size: 0.8em;
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* zoomable evidence = a button wrapping the img */
+button.zoom {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  position: relative;
+}
+button.zoom::after {
+  content: "⤢";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  color: var(--page);
+  border-radius: 4px;
+  font-size: 0.9rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+button.zoom:hover::after,
+button.zoom:focus-visible::after { opacity: 1; }
+
+/* ---- Phone mockup: 샤오홍슈 2대 스택 (3차 재작업) ---------------------- */
+/* 원본: 정이 취업 에이전트/portfolio_siteV1/portfolio.html
+   CSS 163~184행(.mock/.phone/.screen/.ph-top/.ph-dot/.ph-follow/.ph-feed/
+   .note/.cov/.meta/.like), 304~311행(.xhs-stack) 구조를 그대로 재현.
+   .phone 치수·모서리·베젤·그림자, .xhs-stack의 translate/rotate 값은
+   원본 그대로 — 바꾼 건 원본의 초록 강조색 하나를 var(--ink)로 치환한 것뿐이다.
+   .mock .glow(초록 radial)는 이 사이트에 없다: 만들지 않는다. */
+/* 원본은 좁은 미디어 칼럼 기준이라 200px 폰이 맞았지만, 이 사이트의 케이스
+   미디어 칼럼은 800~940px로 훨씬 넓다. 그대로 두면 폰이 여백에 떠 보인다.
+   → 스택 폭을 묶고(max-width) 폰을 키워 원본의 밀도를 복원한다. */
+.xhs-stack {
+  position: relative;
+  min-height: 540px;
+  max-width: 500px;
+  margin-inline: auto;
+  overflow: visible;
+}
+.xhs-stack .phone { width: min(248px, 56%); }
+/* 케이스 상세의 곁단은 폭이 좁아 폰 안 콘텐츠가 작아진다 — 그 안에서만 더 키운다 */
+.block-aside .xhs-stack { max-width: none; }
+.block-aside .xhs-stack .phone { width: min(300px, 68%); }
+/* 실행 단계가 길어 스크롤하면 곁단 이미지가 먼저 사라진다 —
+   본문을 내리는 동안 증거가 같이 따라오도록 고정한다.
+   (sticky 본체는 아래 2-column 규칙 하나로 통합: .block-text/.block-aside top:92px) */
+@media (prefers-reduced-motion: reduce) {
+  .block-cols .block-aside { position: static; }
+}
+/* 곁단의 단독 폰도 같은 이유로 키운다 (칼럼 476px 기준) */
+.block-aside .phone-solo .phone { width: min(376px, 92%); }
+/* 폰 1대만 세울 때 — 스택 배치 없이 가운데 정렬 */
+.phone-solo {
+  display: flex;
+  justify-content: center;
+  padding-block: var(--s3);
+}
+.phone-solo .phone { width: min(300px, 84%); }
+.xhs-stack .phone.back {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-78%, -50%) rotate(-7deg);
+  z-index: 0;
+  filter: brightness(.9);
+}
+.xhs-stack .phone.front {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-22%, -50%) rotate(5deg);
+  z-index: 2;
+}
+@media (max-width: 880px) {
+  .xhs-stack { min-height: 470px; }
+  .xhs-stack .phone { width: min(205px, 50%); }
+}
+@media (max-width: 480px) {
+  .xhs-stack { min-height: 400px; }
+  .xhs-stack .phone { width: min(172px, 46%); }
+}
+
+/* 폰 내부 UI는 폰 폭에 비례해야 한다. 원본은 200px 폰 기준 고정 px였는데
+   이 사이트는 폰을 272px로 키웠으므로, 폰을 컨테이너로 삼아 내부 값을
+   cqw로 환산한다(원본 px ÷ 2 = cqw). 폰 자신의 padding/radius는 자기
+   컨테이너를 참조할 수 없으므로 브레이크포인트별 px로 둔다. */
+/* 실물 아이폰 목업 사진을 프레임으로 쓴다. 화면 영역만 투명하게 뚫어놨으므로
+   콘텐츠를 그 자리에 절대배치하고, 프레임 이미지를 위에 얹어 노치를 살린다.
+   (assets/mockup/iphone-frame.png — 458x915, 화면 left 8.297% / top 3.607%
+    / width 82.751% / height 90.820%) */
+.phone {
+  container-type: inline-size;
+  position: relative;
+  width: min(248px, 72%);
+  aspect-ratio: 458 / 915;
+  filter: drop-shadow(0 18px 30px rgba(19, 19, 19, 0.16));
+}
+.phone::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: url("./assets/mockup/iphone-frame.png") center / 100% 100% no-repeat;
+  pointer-events: none;
+}
+.phone .screen {
+  position: absolute;
+  left: 8.297%;
+  top: 3.607%;
+  width: 82.751%;
+  height: 90.820%;
+  border-radius: 7cqw;
+  background: linear-gradient(180deg, #fff, #f4f1ec);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  z-index: 1;
+}
+/* Aera 전용 프레임 — 노치 없는 얇은 베젤. 화면 좌표가 다르므로 별도 변형.
+   (assets/mockup/iphone-aera.png — 318x669, 화면 left 5.425% / top 2.018%
+    / width 89.387% / height 95.404%) */
+.phone--aera { aspect-ratio: 318 / 669; }
+.phone--aera::after { background-image: url("./assets/mockup/iphone-aera.png"); }
+.phone--aera .screen {
+  left: 5.425%;
+  top: 2.018%;
+  width: 89.387%;
+  height: 95.404%;
+  border-radius: 7cqw;
+}
+
+.phone .screen .zoom {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* 세로 커버(비율 약 0.63)가 폰 화면(약 0.52)보다 넓어서 cover로 채우면
+   좌우가 잘려 내용이 안 보인다 → contain으로 원본 전체를 보여준다.
+   남는 위아래는 폰 화면이 꺼진 영역처럼 어둡게 둔다. */
+.phone .screen img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  display: block;
+  border-radius: 0;
+  background: #101010;
+  box-shadow: none;
+}
+/* Aera 캡처(660×1434 ≈ 0.46)는 실기기 풀스크린 샷이라 화면 영역을 꽉 채운다.
+   xhs 세로 커버(≈0.63)와 달리 letterbox 불필요 → contain 대신 cover.
+   이 규칙은 위 .phone .screen img(contain)보다 뒤에 와야 이긴다. */
+.phone--aera .screen img { object-fit: cover; background: none; }
+/* 폰 화면 안의 zoom 버튼은 인덱스 증거 사진의 비뚤임+테이프 연출과는
+   다른 시각 언어라 무효화한다(그림에 잘리면 부자연스럽다). */
+.phone .zoom,
+.phone .zoom:hover,
+.phone .zoom:focus-visible {
+  transform: none;
+}
+.phone .zoom::before { content: none; }
+
+/* 뒤 폰 전용: 샤오홍슈 앱 피드 UI (계정 증거) — 원본 값 그대로,
+   원본의 초록 강조색만 var(--ink)로 치환 */
+.ph-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5.5cqw 6cqw 3.5cqw;
+}
+.ph-top .l { display: flex; align-items: center; gap: 3.5cqw; font-size: 5.5cqw; font-weight: 700; color: #111; }
+.ph-dot { width: 8cqw; height: 8cqw; border-radius: 50%; background: var(--ink); flex: none; }
+.ph-follow { font-size: 4.25cqw; font-weight: 700; color: #fff; background: var(--ink); padding: 2cqw 4.5cqw; border-radius: 999px; white-space: nowrap; }
+/* align-content:start — 칸이 세로로 늘어나 아래가 비는 것을 막는다 */
+.ph-feed { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 3.5cqw; padding: 3.5cqw 5cqw 5.5cqw; align-content: start; overflow: hidden; }
+.note { position: relative; border-radius: 5cqw; overflow: hidden; background: #eee; display: flex; flex-direction: column; }
+/* .phone .screen img(전체 채움) 보다 더 구체적이어야 94px 고정 높이가
+   이긴다 — 노트 썸네일은 화면 전체가 아니라 그리드 칸만 채운다 */
+.phone .screen .note .cov { width: 100%; height: 47cqw; object-fit: cover; display: block; background: none; }
+.note .meta { padding: 3cqw 3.5cqw 3.5cqw; }
+.note .like { display: flex; align-items: center; gap: 1.5cqw; font-size: 4cqw; color: #888; margin-top: 1cqw; }
+.note .like b { color: var(--ink); }
+
+/* ---- Cases (index) --------------------------------------------------- */
+.case {
+  padding-block: clamp(36px, 4.5vw, 60px);
+  border-top: 1px solid var(--hairline);
+}
+/* 번호는 왼쪽 끝, 태그는 오른쪽 끝, 아래 hairline —
+   카드가 시작되는 지점을 눈이 한 번에 잡게 한다. */
+.case-topline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: var(--s4);
+}
+/* 대형 고스트 챕터 번호 — 뱃지에서 아웃라인 숫자로. achromatic 유지
+   (그라디언트 아님, 잉크 스트로크 + 투명 fill). */
+.case-no {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 0.9rem;
+  line-height: 0.86;
+  letter-spacing: -0.02em;
+  color: var(--ink-2);
+}
+.case-tag { color: var(--ink-2); font-weight: 700; font-size: 0.9rem; }
+.case-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(28px, 4vw, 52px);
+  align-items: center;
+}
+@media (min-width: 860px) {
+  .case-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 0.85fr); }
+  .case--flip .case-text { order: 2; }
+}
+.case h3 {
+  font-size: clamp(1.75rem, 3.8vw, 2.8rem);
+  font-weight: 870;
+  letter-spacing: -0.03em;
+}
+.case-subtitle { margin-top: var(--s2); color: var(--ink-2); font-size: 1.02rem; }
+/* 케이스 답-먼저(BLUF) — 제목/부제 바로 아래 최강 근거 한 줄.
+   본문 프로즈보다 크고 무겁게, 지표 밴드 위에서 먼저 읽히게. */
+.case-bluf {
+  margin-top: var(--s3);
+  max-width: 44ch;
+  font-size: clamp(1.05rem, 2vw, 1.22rem);
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+.detail-bluf {
+  margin-top: var(--s4);
+  max-width: 46ch;
+  font-size: clamp(1.1rem, 2.2vw, 1.4rem);
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+.case-text p { margin-top: var(--s4); max-width: 54ch; }
+
+/* 케이스 지표 — 숫자를 문장에서 빼내 「큰 숫자 + 작은 라벨」 블록으로 세운다.
+   한 줄 회색 텍스트로 두면 훑을 때 숫자가 묻힌다. */
+.case-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(20px, 2.4vw, 32px);
+  margin-top: clamp(22px, 2.6vw, 30px);
+}
+.case-stats .n {
+  font-size: clamp(1.7rem, 3vw, 2.4rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.case-stats .l {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+/* 지표 아래 보조 한 줄 — 브랜드명·부연. 숫자보다 확실히 약하게. */
+.case-brands {
+  margin-top: var(--s3);
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  max-width: 44ch;
+}
+/* 담당 범위처럼 값이 실린 한 줄 — .case-brands와 같은 자리지만
+   회색 캡션이 아니라 본문 톤으로 읽혀야 하는 정보용. */
+.role-line {
+  margin-top: var(--s3);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ink);
+  max-width: 44ch;
+}
+/* 케이스 headline 숫자 요약 — 제목/부제 바로 아래 스탯 밴드.
+   레이어케이크 스캐닝(위→아래)에 맞춰 본문 프로즈보다 먼저 읽힌다.
+   닫는 요소가 아니라 여는 요소라 위아래 헤어라인으로 밴드처럼 감싼다. */
+.case-metrics {
+  list-style: none;
+  margin: var(--s4) 0 0;
+  padding: var(--s3) 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s5);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+.case-metrics li { font-size: 0.95rem; color: var(--ink-2); }
+.case-metrics b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 800; }
+.case-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: var(--s5);
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--ink);
+  border-bottom: 2px solid var(--marker);
+  padding: 4px 2px;
+  min-height: 44px;
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--marker) 55%, transparent),
+    color-mix(in srgb, var(--marker) 55%, transparent)
+  );
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 0%;
+  transition: background-size 0.22s var(--ease-out);
+}
+.case-cta:hover { background-size: 100% 46%; }
+.case-cta .arw { transition: transform 0.18s var(--ease-out); }
+.case-cta:hover .arw { transform: translateX(4px); }
+
+.case-media { display: grid; gap: var(--s3); }
+.case-media--stack { grid-template-columns: 1fr; }
+.case-media--pair { grid-template-columns: 1fr 1fr; }
+@media (max-width: 480px) { .case-media--pair { grid-template-columns: 1fr; } }
+
+/* 이미지 없는 케이스(대만) — 숫자 하나로 미디어 자리를 채우는 타이포 카드 */
+.case-media--stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--s3);
+  min-height: 260px;
+  padding: clamp(24px, 4vw, 40px);
+  background: var(--page);
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+}
+.case-media--stat strong {
+  font-size: clamp(4rem, 9vw, 8rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 870;
+  line-height: 0.9;
+  letter-spacing: -0.03em;
+}
+.case-media--stat span {
+  color: var(--ink-2);
+  font-size: 0.92rem;
+}
+
+/* ---- How (competencies) --------------------------------------------- */
+.how-list { border-top: 1px solid var(--ink); }
+.how-item {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--s2) var(--s5);
+  padding-block: clamp(28px, 4vw, 44px);
+  border-bottom: 1px solid var(--hairline);
+}
+@media (min-width: 780px) {
+  .how-item { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.4fr); }
+}
+.how-index {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+}
+.how-index .n {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+.how-item h3 { font-size: clamp(1.2rem, 2.4vw, 1.55rem); letter-spacing: -0.02em; }
+.how-tagline { color: var(--ink-2); margin-top: var(--s2); font-size: 0.98rem; }
+.how-body p { margin-top: var(--s3); }
+.how-body p:first-child { margin-top: 0; }
+.how-note { color: var(--ink-2); font-size: 0.9rem; }
+.how-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-top: var(--s3); font-weight: 700; text-decoration: none;
+  border-bottom: 2px solid var(--marker); padding: 3px 1px; min-height: 44px;
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--marker) 55%, transparent),
+    color-mix(in srgb, var(--marker) 55%, transparent)
+  );
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 0%;
+  transition: background-size 0.22s var(--ease-out);
+}
+.how-link:hover { background-size: 100% 46%; }
+
+/* ---- Selected Works ---------------------------------------------------- */
+/* v9: 홈은 3열 카드(.work-cards)로 바뀌었고, 아래 두 규칙만 카드에서
+   계속 쓴다. .works-list / .work-item / .work-kind / .work-block은
+   비대칭 레이아웃 전용이라 함께 삭제했다. */
+.work-idx {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+.work-title {
+  font-size: clamp(1.3rem, 2.6vw, 1.7rem);
+  letter-spacing: -0.02em;
+}
+
+/* Aera 상세(work-01-aera.html)가 쓰는 3열 프로즈 그리드 */
+/* Problem / Insight / Product — 3열, 모바일 1열 */
+.work-feature-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(20px, 3vw, 32px);
+  margin-top: var(--s5);
+  padding-top: clamp(20px, 3vw, 28px);
+  border-top: 1px solid var(--hairline);
+}
+@media (min-width: 760px) {
+  .work-feature-grid { grid-template-columns: repeat(3, 1fr); }
+}
+/* 위 블록(폰 3대)에 바로 이어 붙을 때는 상단 괘선·여백을 없앤다 */
+.work-feature-grid--flush { margin-top: 32px; border-top: 0; padding-top: 0; }
+.work-feature-grid p:not(.block-label) { margin-top: var(--s2); max-width: 36ch; }
+
+/* 폰 3대 가로 — .xhs-stack(겹침)이 아니라 나란히. 가운데를 8% 키워
+   삼각 리듬을 만든다. 회전은 주지 않는다. */
+.aera-shots {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: clamp(12px, 2.4vw, 28px);
+  margin-bottom: clamp(28px, 4vw, 44px);
+}
+/* 최소폭은 320px 뷰포트에서 3대 + gap이 넘치지 않도록 낮춘다
+   (3×76 + 84 + gap ≤ 콘텐츠폭). 상한·중앙 강조 비율은 그대로. */
+.aera-shots .phone { width: clamp(76px, 15vw, 200px); flex: none; }
+.aera-shots .phone:nth-child(2) { width: clamp(84px, 16.2vw, 216px); }
+
+/* work-01-aera.html 상세 페이지 — 폭이 넓은 상세 본문에서는 폰을 더 크게 */
+.detail-body .aera-shots .phone { width: min(260px, 30%); }
+
+/* ---- Skills / flow (v7) ------------------------------------------------ */
+/* Works와 Awards 사이 — 화면·다이어그램 없이 4단계만. 케이스 카드 1개보다
+   낮게 유지하기 위해 텍스트 3줄(영문·한글·설명)로 끝낸다. */
+.flow-list {
+  display: grid;
+  gap: clamp(20px, 3vw, 32px);
+  grid-template-columns: 1fr;
+  border-top: 1px solid var(--ink);
+  padding-top: clamp(20px, 3vw, 32px);
+  margin-top: var(--s5);
+}
+@media (min-width: 560px) {
+  .flow-list { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 860px) {
+  .flow-list { grid-template-columns: repeat(4, 1fr); }
+}
+/* 아이콘 → 번호(+화살표) → 영문 라벨 → 한글 → 설명 순서 */
+.flow-icon {
+  display: block;
+  width: clamp(34px, 3vw, 44px);
+  color: var(--ink);
+}
+.flow-icon svg { width: 100%; height: auto; display: block; }
+/* 번호 줄 — 번호는 왼쪽, 다음 단계로 넘어가는 화살표는 칸 오른쪽 끝.
+   마지막 단계에는 화살표가 없다(다음이 없으므로). */
+.flow-step .flow-no {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-top: clamp(18px, 2vw, 26px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.flow-arrow { color: color-mix(in srgb, var(--ink) 48%, transparent); }
+/* 4열로 놓였을 때만 화살표가 "다음 칸으로"를 뜻한다. 1·2열로 접히면
+   방향이 거짓말이 되므로 숨긴다. */
+@media (max-width: 859px) {
+  .flow-arrow { display: none; }
+}
+.flow-step .flow-en {
+  margin-top: clamp(14px, 1.6vw, 18px);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.flow-step .flow-title {
+  margin-top: 4px;
+  font-size: clamp(1.3rem, 2.4vw, 1.7rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.flow-step .flow-desc {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  color: var(--ink-2);
+}
+
+/* ---- More ------------------------------------------------------------ */
+/* v4: 세로 목록 → 가로 3열. 텍스트는 메타+제목만 남기고 설명 문단은
+   삭제 — 한 화면에서 "상을 여러 번 받았다"가 스캔되면 충분하다. */
+.more-list {
+  display: grid;
+  gap: clamp(24px, 3vw, 36px);
+  grid-template-columns: 1fr;
+  border-top: 1px solid var(--ink);
+  padding-top: clamp(20px, 3vw, 32px);
+}
+@media (min-width: 760px) {
+  .more-list { grid-template-columns: repeat(3, 1fr); }
+}
+.more-item { display: flex; flex-direction: column; gap: var(--s3); }
+.more-item .evidence img { aspect-ratio: 16 / 10; object-fit: cover; }
+.more-meta {
+  font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--ink-2); text-transform: uppercase; margin-bottom: var(--s2);
+}
+.more-item h3 { font-size: clamp(1.05rem, 1.6vw, 1.25rem); letter-spacing: -0.02em; }
+
+/* ---- Awards strip (구 More 섹션 폐지, 한 줄로) ------------------------ */
+/* About / Contact 규칙은 v9에서 .closing 블록으로 대체됐다 — 아래쪽
+   "3. 닫는 두 줄" 참고. 옛 .about-grid/.about-lead/.contact-links는
+   쓰는 곳이 없어 삭제. */
+
+/* ---- Footer ---------------------------------------------------------- */
+.site-footer {
+  border-top: 1px solid var(--ink);
+  padding-block: var(--s6);
+}
+.site-footer .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s4);
+  align-items: center;
+  justify-content: space-between;
+}
+.footer-nav { display: flex; flex-wrap: wrap; gap: var(--s4); list-style: none; margin: 0; padding: 0; }
+.footer-nav a { text-decoration: none; color: var(--ink-2); font-weight: 600; min-height: 44px; display: inline-flex; align-items: center; }
+.footer-nav a:hover { color: var(--ink); }
+.footer-meta { color: var(--ink-2); font-size: 0.85rem; width: 100%; padding-top: var(--s4); border-top: 1px solid var(--hairline); display: flex; flex-wrap: wrap; gap: var(--s3) var(--s5); }
+
+/* =====================================================================
+   Case detail pages
+   ===================================================================== */
+.detail-hero { padding-block: clamp(48px, 8vw, 96px) clamp(32px, 5vw, 56px); }
+.back-link {
+  display: inline-flex; align-items: center; gap: 8px;
+  text-decoration: none; color: var(--ink-2); font-weight: 700;
+  font-size: 0.9rem; min-height: 44px;
+}
+.back-link:hover { color: var(--ink); }
+.detail-hero h1 {
+  font-size: clamp(2rem, 5vw, 3.6rem);
+  font-weight: 870;
+  letter-spacing: -0.035em;
+  margin-top: var(--s4);
+  max-width: 20ch;
+}
+.detail-hero .subtitle { margin-top: var(--s4); color: var(--ink-2); font-size: clamp(1.05rem, 2vw, 1.3rem); max-width: 48ch; }
+.detail-meta {
+  display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3);
+  margin-top: var(--s5);
+}
+.detail-meta span {
+  font-size: 0.82rem; color: var(--ink-2); font-weight: 600;
+  border: 1px solid var(--hairline); border-radius: 3px; padding: 4px 10px;
+}
+
+.detail-body { padding-bottom: clamp(56px, 9vw, 112px); }
+.block { padding-block: clamp(36px, 5vw, 64px); border-top: 1px solid var(--hairline); }
+.block-label {
+  font-size: 0.82rem; font-weight: 800; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-2); margin-bottom: var(--s4);
+}
+/* 갤러리·덱 바로 위에 붙는 라벨 — 위는 넉넉히 띄우고 아래는 바짝(40/8) */
+.block-label--spaced { margin-top: var(--s5); margin-bottom: var(--s2); }
+.block h2 { font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -0.03em; margin-bottom: var(--s4); }
+.prose { max-width: var(--measure); }
+.prose p { margin-top: var(--s4); }
+.prose p:first-child { margin-top: 0; }
+.prose b { font-weight: 800; font-size: 1.06em; }
+.prose .caption-note { color: var(--ink-2); font-size: 0.92rem; }
+/* 실행 단계(①②③④) — 케이스에서 실제로 무엇을 했는지가 읽히는 곳이라
+   본문 프로즈보다 한 단계 크게. 번호+요지(b)는 그보다 한 단계 더. */
+.prose--steps p {
+  font-size: clamp(1.02rem, 1.4vw, 1.14rem);
+  line-height: 1.65;
+  margin-top: var(--s5);
+}
+.prose--steps b {
+  display: block;
+  margin-bottom: 6px;
+  font-size: clamp(1.08rem, 1.6vw, 1.24rem);
+  letter-spacing: -0.02em;
+}
+/* 실행 문단 바로 아래 붙는 결과 박스 — 별도 섹션으로 떼지 않고
+   「이렇게 했더니 → 이렇게 됐다」가 한 덩어리로 읽히게 묶는다. */
+.result-box {
+  margin-top: var(--s5);
+  padding: var(--s4) var(--s4) calc(var(--s4) + 4px);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: color-mix(in srgb, #fff 60%, transparent);
+  max-width: var(--measure);
+}
+.result-box .block-label { margin-bottom: var(--s2); }
+.result-box .result-list { margin-top: var(--s2); }
+.result-list { list-style: none; margin: var(--s3) 0 0; padding: 0; max-width: var(--measure); }
+.result-list li {
+  position: relative; padding-left: 22px; margin-top: var(--s3);
+}
+.result-list li::before {
+  content: ""; position: absolute; left: 0; top: 0.62em;
+  width: 9px; height: 3px; background: var(--marker);
+}
+
+/* gallery */
+.gallery {
+  display: grid;
+  gap: clamp(16px, 2.4vw, 28px);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  margin-top: var(--s5);
+}
+.gallery--wide { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.gallery--phones { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+/* ---- Deck viewer (D1) ------------------------------------------------ */
+/* 문서(덱·가이드북) 카드 = 표지 썸네일 + "전체 N장 보기". 전 페이지는
+   DOM에 없고 뷰어를 연 순간 합성되므로, 이 카드가 유일한 진입점이다. */
+/* 가이드북 4종은 '한 세트'라서 넓은 화면에서 4장이 한 줄에 오게 고정한다
+   (auto-fit이면 3+1로 끊겨 세트로 안 읽힌다). */
+.gallery--decks { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+@media (min-width: 1000px) { .gallery--decks { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.deckcard { display: flex; flex-direction: column; align-items: flex-start; }
+.deckcard figcaption { flex: 1 0 auto; }
+.deck-count {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 84%, transparent);
+  color: var(--page);
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  z-index: 1;
+}
+button.deck-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  margin-top: var(--s3);
+  padding: 0 15px;
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+button.deck-all::after { content: "→"; font-weight: 700; }
+button.deck-all:hover { background: color-mix(in srgb, var(--marker) 40%, transparent); }
+.f1 button.deck-all { border-color: var(--f1-hairline); color: var(--f1-ink); }
+.f1 button.deck-all:hover { background: var(--f1-hairline); }
+.filmstrip-headl { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.filmstrip-headl button.deck-all { margin-top: 0; }
+
+/* ---- 2-column case body (A1) ----------------------------------------- */
+/* 모바일·태블릿은 지금까지처럼 1컬럼(텍스트 → 증거 순서 그대로).
+   ≥1100px에서만 좌 텍스트 / 우 증거로 갈라 우측 공백을 없앤다.
+   두 컬럼 모두 sticky + align-self:start 라서, 짧은 쪽이 알아서 고정되고
+   긴 쪽이 그 옆을 지나간다(증거가 많은 블록에선 텍스트가 동행한다). */
+.block-cols { display: grid; gap: var(--s5); }
+.block-cols .block-aside { display: grid; gap: var(--s5); align-content: start; }
+.block-cols .gallery,
+.block-cols .videobox { margin-top: 0; }
+
+@media (min-width: 1100px) {
+  .block-cols {
+    grid-template-columns: minmax(0, 52fr) minmax(0, 48fr);
+    column-gap: clamp(32px, 4vw, 72px);
+    align-items: start;
+  }
+  .block-cols > .block-text,
+  .block-cols > .block-aside {
+    position: sticky;
+    top: 92px;
+    align-self: start;
+  }
+  /* 증거 레일 안에서는 한 줄에 두 장까지만 — 세로로 길게 늘어지지 않게 */
+  .block-cols .gallery--phones { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .block-cols .gallery--wide { grid-template-columns: minmax(0, 1fr); }
+  .block-cols .xhs-video video { max-width: 260px; }
+  /* 손글씨 주석이 아래 행 증거와 붙지 않도록 자기 자리를 확보 */
+  .block-cols .ink-anno { margin-bottom: 26px; }
+}
+
+/* ---- F1 sub-section ----------------------------------------------------
+   v5-2에서 다크 → 밝은 흰 패널로 뒤집었고, v9에서 패널 자체를 걷어냈다.
+   클래스 이름(.f1 / .on-dark)은 포커스 링 공유 selector 때문에 유지한다. */
+/* v9: 흰 패널(배경·테두리·라운드·큰 패딩) 제거. F1만 본문이 카드 안에
+   들어앉아 다른 상세 페이지와 어긋나 보였다. 이제 .block과 같은 리듬으로
+   종이 위에 그대로 놓인다. 아래 .f1 하위 규칙들은 이 페이지 전용
+   디테일(덱 이미지 테두리·zoom 배지·결과 목록 마커)이라 그대로 둔다. */
+.f1 {
+  color: var(--f1-ink);
+  padding-block: clamp(36px, 5vw, 64px);
+  border-top: 1px solid var(--hairline);
+}
+.f1 h2, .f1 h3 { color: var(--f1-ink); }
+.f1 .block-label { color: color-mix(in srgb, var(--f1-ink) 62%, transparent); }
+.f1 p { color: color-mix(in srgb, var(--f1-ink) 82%, transparent); }
+.f1 .prose b { color: var(--f1-ink); }
+/* mark는 color:inherit라 본문(82% 잉크)을 물려받아 옆의 b(100% 잉크)보다
+   흐리게 보인다 — 대비는 충분하지만 형광펜이 볼드보다 약해 보이는 건
+   위계가 뒤집힌 것이므로 잉크를 완전히 채운다. */
+.f1 mark { color: var(--f1-ink); }
+.f1 .evidence img { border: 1px solid var(--f1-hairline); background: #fff; box-shadow: none; }
+.f1 .evidence figcaption { color: color-mix(in srgb, var(--f1-ink) 64%, transparent); }
+.f1 .evidence figcaption .src { color: var(--f1-ink); }
+.f1 button.zoom::after { background: color-mix(in srgb, var(--f1-ink) 85%, transparent); color: var(--f1-bg); }
+.f1 .result-list li::before { background: var(--marker); }
+
+/* Film strip (F1 deck, 22 slides) */
+.filmstrip-shell { margin-top: var(--s5); }
+.filmstrip-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.filmstrip-counter {
+  font-variant-numeric: tabular-nums; font-weight: 800; letter-spacing: 0.02em;
+  color: var(--f1-ink);
+}
+.filmstrip-hint { font-size: 0.82rem; color: color-mix(in srgb, var(--f1-ink) 60%, transparent); }
+.filmstrip {
+  display: flex;
+  gap: var(--s3);
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: var(--s3);
+  scrollbar-width: thin;
+  /* f1-hairline은 밝은 배경 위에서 스크롤바 썸으로 쓰기엔 대비가 너무
+     약하다(라이트 위 라이트) — 항상 F1(밝은 배경) 전용인 이 트랙만
+     ink-2 톤으로 분리해 시인성을 확보한다. */
+  scrollbar-color: color-mix(in srgb, var(--ink-2) 70%, transparent) transparent;
+}
+.filmstrip::-webkit-scrollbar { height: 8px; }
+.filmstrip::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink-2) 70%, transparent);
+  border-radius: 8px;
+}
+.filmstrip figure {
+  flex: 0 0 min(86%, 520px);
+  scroll-snap-align: center;
+  margin: 0;
+}
+.filmstrip button.zoom { cursor: zoom-in; }
+.filmstrip img {
+  width: 100%;
+  border: 1px solid var(--f1-hairline);
+  border-radius: 3px;
+  background: #111;
+}
+.filmstrip figcaption {
+  margin-top: var(--s2);
+  font-size: 0.82rem;
+  color: color-mix(in srgb, var(--f1-ink) 64%, transparent);
+}
+.filmstrip-nav { display: flex; gap: var(--s2); }
+.filmstrip-nav button {
+  width: 44px; height: 44px;
+  border: 1px solid var(--f1-hairline);
+  background: transparent;
+  color: var(--f1-ink);
+  border-radius: 4px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: grid; place-items: center;
+}
+.filmstrip-nav button:hover { background: var(--f1-hairline); }
+
+/* 수입 캡처(B2) — 가로로 긴 배너라 본문 폭을 다 쓰면 과하게 커진다 */
+.income-shot { margin-top: var(--s6); max-width: 560px; }
+
+/* video (prototype) */
+.videobox { margin-top: var(--s5); }
+.videobox video {
+  width: 100%;
+  height: auto; /* HTML width/height 속성이 aspect-ratio를 덮어써 세로로 늘어나던 것 */
+  max-width: 720px;
+  border: 1px solid var(--f1-hairline);
+  border-radius: 4px;
+  background: #000;
+  aspect-ratio: 16 / 9;
+}
+.videobox figcaption { margin-top: var(--s2); font-size: 0.85rem; color: color-mix(in srgb, var(--f1-ink) 64%, transparent); }
+.xhs-video video { max-width: 320px; aspect-ratio: 9 / 16; border-color: var(--hairline); }
+.xhs-video figcaption { color: var(--ink-2); }
+
+/* ---- prev / next ----------------------------------------------------- */
+.casenav {
+  border-top: 1px solid var(--ink);
+  margin-top: var(--s6);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  background: var(--hairline);
+}
+@media (min-width: 680px) { .casenav { grid-template-columns: 1fr 1fr; } }
+.casenav a {
+  background: var(--page);
+  text-decoration: none;
+  padding: var(--s5) var(--s4);
+  display: block;
+  min-height: 44px;
+}
+.casenav a:hover { background: color-mix(in srgb, var(--marker) 14%, var(--page)); }
+.casenav .dir { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
+.casenav .t { display: block; margin-top: var(--s2); font-weight: 800; letter-spacing: -0.02em; font-size: 1.1rem; }
+.casenav .next { text-align: right; }
+/* 첫 케이스는 '이전'이 없다 — next가 첫 자식이면 왼쪽 칸을 비우고 오른쪽에 붙인다 */
+@media (min-width: 680px) {
+  /* 빈 칸을 그대로 두면 컨테이너 배경(헤어라인)이 회색 덩어리로 드러나므로
+     짝이 없는 쪽이 두 칸을 차지한다. */
+  .casenav .next:first-child { grid-column: 1 / -1; }
+  .casenav--end .prev { grid-column: 1 / -1; }
+}
+.casenav-back {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+/* ---- Lightbox -------------------------------------------------------- */
+dialog.lightbox {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  max-width: 96vw;
+  max-height: 96vh;
+  overflow: visible;
+  z-index: var(--z-lightbox);
+}
+dialog.lightbox::backdrop { background: rgba(8, 8, 8, 0.9); }
+.lightbox-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+}
+.lightbox-figure { margin: 0; display: flex; flex-direction: column; align-items: center; }
+.lightbox-figure img {
+  max-width: 92vw;
+  max-height: 80vh;
+  width: auto;
+  border-radius: 3px;
+  background: #111;
+}
+.lightbox-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+.lightbox button {
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: grid; place-items: center;
+}
+.lightbox button:hover { background: rgba(255, 255, 255, 0.18); }
+.lightbox-count { color: #cfcfcf; font-variant-numeric: tabular-nums; font-size: 0.9rem; min-width: 56px; text-align: center; }
+.lightbox-close {
+  position: fixed;
+  top: 16px; right: 16px;
+}
+
+/* =====================================================================
+   v2 design upgrades (see AWWWARDS-DESIGN-ELEMENTS.md · "Fable 최종 선정")
+   모든 모션은 prefers-reduced-motion 폴백을 가진다.
+   ===================================================================== */
+
+/* ---- (1) 첫 로드 히어로 안무 ----------------------------------------- */
+/* H1 두 줄을 개별 블록으로 스택(기존 <br> 대체). 정적/무JS/reduced에서는
+   그냥 두 줄 텍스트로 보인다. */
+.hero h1 .line { display: block; }
+.hero h1 .line-inner { display: block; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 줄 단위 마스크 리빌 — overflow 래퍼 안에서 아래→위로 올라온다.
+     highlighter가 아래로 살짝 삐져나가므로 패딩으로 여유를 주고 음수
+     마진으로 리듬을 보정한다. */
+  html.js .hero h1 .line {
+    overflow: hidden;
+    padding-bottom: 0.14em;
+    margin-bottom: -0.14em;
+  }
+  html.js .hero h1 .line-inner {
+    animation: heroLineUp 0.42s var(--ease-out) both;
+  }
+  html.js .hero h1 .line:nth-child(2) .line-inner { animation-delay: 0.06s; }
+
+  html.js .hero-filerow .tab {
+    animation: heroTabDrop 0.28s var(--ease-out) both;
+  }
+  html.js .hero-sub {
+    animation: heroFadeUp 0.32s var(--ease-out) 0.2s both;
+  }
+
+  /* 형광펜 캐스케이드 — 전체 0.5s 이내로 압축. 텍스트·숫자는 t≈0에
+     이미 읽히고, 획만 짧은 스태거로 거의 동시에 그어진다(50ms 판정
+     순간에 헤드라인·숫자 존재). */
+  html.js .hero h1 mark { transition-delay: 0.16s; }
+  html.js .hero-metrics .ledger-row:nth-child(1) .ledger-num mark { transition-delay: 0.30s; }
+  html.js .hero-metrics .ledger-row:nth-child(2) .ledger-num mark { transition-delay: 0.36s; }
+  html.js .hero-metrics .ledger-row:nth-child(3) .ledger-num mark { transition-delay: 0.42s; }
+}
+@keyframes heroLineUp { from { transform: translateY(108%); } to { transform: translateY(0); } }
+@keyframes heroTabDrop { from { transform: translateY(-6px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes heroFadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---- (3) View Transitions (index ↔ 상세) ---------------------------- */
+/* 지원 브라우저에서 네비게이션 크로스페이드 + 케이스 제목 공유요소 모프.
+   미지원은 자동 하드 컷(점진 향상). */
+@view-transition { navigation: auto; }
+[data-vt="vt-adv-title"]  { view-transition-name: vt-adv-title; }
+[data-vt="vt-oy-title"]   { view-transition-name: vt-oy-title; }
+[data-vt="vt-market-title"] { view-transition-name: vt-market-title; }
+[data-vt="vt-prop-title"] { view-transition-name: vt-prop-title; }
+
+/* (4) 형광펜 스크롤 레일 — 제거됨(P2-12): far-left 2px 저대비로 지각
+   불가, 단일 시그니처(형광펜 스윕)로 회귀하며 삭제. */
+
+/* ---- (5) 검토자 잉크 주석 (정적, 사진 바깥에서 숫자를 가리킴) -------- */
+.ink-anno { position: relative; }
+.ink-note {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 2;
+  color: var(--ink);
+}
+.ink-note svg { display: block; overflow: visible; }
+.ink-note-label {
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  white-space: nowrap;
+  transform: rotate(-3deg);
+}
+/* 아래 → 위로 가리키는 주석(좋아요 수는 커버 하단에 있다) */
+.ink-note--up {
+  top: calc(100% + 2px);
+  right: 6px;
+  flex-direction: row-reverse;
+}
+/* 위 → 아래로 가리키는 주석(프로필 팔로워 수는 상단에 있다) */
+.ink-note--down {
+  bottom: calc(100% + 2px);
+  left: 10px;
+}
+@media (max-width: 859px) {
+  .ink-note { display: none; }
+}
+
+/* ---- (6) 정적 브랜드 스트립 (#25, 움직임 없음) ---------------------- */
+.brand-strip {
+  list-style: none;
+  margin: var(--s4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 0;
+}
+.brand-strip li {
+  font-weight: 800;
+  font-size: clamp(1.05rem, 2vw, 1.4rem);
+  letter-spacing: -0.02em;
+  color: var(--ink-2);
+  padding: 0 clamp(10px, 1.4vw, 18px);
+  border-left: 1px solid var(--hairline);
+  transition: color 0.15s ease;
+}
+.brand-strip li:first-child { border-left: 0; padding-left: 0; }
+.brand-strip li:hover { color: var(--ink); }
+.brand-strip-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: var(--s4) 0 var(--s2);
+}
+
+/* ---- Reduced motion -------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * , *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* View Transitions: reduced-motion에서 전환 애니메이션 정지(하드 컷) */
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
+}
+
+
+/* =====================================================================
+   v8 레이아웃 — 히어로 좌우 대치 / 케이스 한 화면 스냅 / About+Contact 2열
+   (v7까지는 히어로 지표가 헤드라인 아래 가로, 케이스는 그냥 이어 붙는
+    지그재그, About과 Contact는 별도 섹션이었다.)
+   ===================================================================== */
+
+/* ---- 1. Hero: 주장 / 근거 좌우 대치 ---------------------------------- */
+.hero-split {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(28px, 4vw, 44px);
+}
+@media (min-width: 900px) {
+  .hero-split {
+    /* 헤드라인 두 절이 각각 한 줄로 앉으려면 왼쪽이 더 넓어야 한다. */
+    grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+    gap: clamp(40px, 5vw, 72px);
+    /* 가운데 정렬 대신 두 칸을 히어로 높이만큼 늘린다 */
+    align-items: stretch;
+    flex: 1;
+  }
+  /* 왼쪽: 남는 높이를 네 간격에 고르게 나눈다. 화면이 높을수록 저절로
+     느슨해지고 낮을수록 조여든다 — 아래만 뭉텅이로 비는 일이 없다.
+     (검증 링크를 margin-top:auto로 바닥에 붙이면 중간이 통째로 빈다) */
+  .hero-claim { display: flex; flex-direction: column; justify-content: space-between; }
+  /* 오른쪽: 3개뿐이라 같은 방식으로 펴면 숫자끼리 남남처럼 멀어진다.
+     한 덩어리로 묶어 세로 중앙에 둔다. */
+  .hero-metrics { justify-content: center; }
+}
+
+/* 지표 스택 — 모바일에서는 원본 ledger처럼 가로로 흘리고(높이 절약),
+   데스크톱에서는 세로로 세워 세로 괘선으로 주장과 마주 보게 한다. */
+.hero-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3) clamp(28px, 5vw, 48px);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--ink);
+}
+@media (min-width: 900px) {
+  .hero-metrics {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: clamp(22px, 5.2vh, 64px);
+    padding-top: 0;
+    padding-left: clamp(32px, 3.6vw, 56px);
+    border-top: 0;
+    border-left: 1px solid var(--ink);
+  }
+}
+/* .ledger-row(플렉스 컬럼 + 호버)는 그대로 재사용하고 숫자만 키운다.
+   히어로가 유일한 소비처이므로 .hero-metrics 안에서만 커진다. */
+.hero-metrics .ledger-num {
+  font-size: clamp(2.6rem, 5.2vw, 3.8rem);
+  line-height: 1;
+}
+.hero-metrics .ledger-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ledger-sub {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* ---- 2. Cases: 등장 애니메이션 --------------------------------------- */
+/* 케이스가 한 장씩 올라온다. 스크롤 구동 애니메이션(animation-timeline)이라
+   JS가 필요 없다. 범위를 짧게(entry 0~20%) 잡아 스크롤하자마자 또렷해진다.
+   미지원 브라우저에서는 @supports 때문에 규칙 자체가 적용되지 않아
+   케이스가 처음부터 그냥 보인다(내용이 숨겨진 채 남는 사고가 없다). */
+@supports (animation-timeline: view()) {
+  @media (min-width: 860px) and (prefers-reduced-motion: no-preference) {
+    .cases-reveal .case {
+      animation: caseRise linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 20%;
+    }
+  }
+}
+@keyframes caseRise {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+
+/* ---- 3. 닫는 두 줄 (About / Contact) ---------------------------------- */
+/* 위·아래 두 줄, 각 줄이 좌우 2열. 히어로의 "주장(좌) / 근거(우)"를
+   마지막에서 한 번 더 쓴다 — 페이지가 같은 구조로 열리고 닫힌다. */
+.closing { display: grid; gap: clamp(48px, 6vw, 88px); }
+.closing-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(28px, 4vw, 56px);
+}
+@media (min-width: 860px) {
+  .closing-row {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+    column-gap: clamp(48px, 6vw, 96px);
+    align-items: center;
+  }
+}
+/* 두 줄 사이 경계 */
+.closing-row--contact {
+  border-top: 1px solid var(--hairline);
+  padding-top: clamp(40px, 5vw, 72px);
+}
+/* 아래 줄은 좌우로 나누지 않고 세로로 쌓는다 —
+   "다음 케이스는 당신의 브랜드"라고 선언한 다음에 이름과 연락처가 온다.
+   옆에 나란히 두면 선언과 명함이 서로 눌러 둘 다 약해진다. */
+@media (min-width: 860px) {
+  .closing-row--stack { grid-template-columns: minmax(0, 1fr); }
+}
+/* 이 줄만 가운데 정렬 — 마지막 한 장면이라 좌측 정렬 그리드에서 벗어나도
+   흐름이 끊기지 않고, "당신의 브랜드"라는 선언이 정면으로 온다. */
+.closing-row--stack { justify-items: center; text-align: center; }
+.closing-row--stack .kicker { justify-content: center; }
+.closing-card { max-width: 26rem; width: 100%; }
+.closing-card .closing-name { text-align: center; }
+.closing-row--stack .contact-rows a { justify-content: center; }
+
+/* 위 줄 왼쪽 — 결론을 크게 */
+.closing h2 {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 870;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+}
+
+/* 위 줄 오른쪽 — 세로 타임라인. 점과 점을 잇는 선이 "같은 방향"을 그린다 */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 clamp(22px, 2.2vw, 28px);
+  position: relative;
+}
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--hairline);
+}
+.timeline li { position: relative; }
+.timeline li + li { margin-top: clamp(24px, 3vw, 38px); }
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * clamp(22px, 2.2vw, 28px));
+  top: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--marker);
+}
+.timeline h3 {
+  font-size: clamp(1.05rem, 1.6vw, 1.2rem);
+  letter-spacing: -0.02em;
+}
+.timeline p {
+  margin-top: 8px;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+/* 아래 줄 왼쪽 — 다음 케이스는 읽는 사람의 브랜드다 */
+.next-label {
+  display: inline-block;
+  margin-top: var(--s3);
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--marker);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.next-brand {
+  margin-top: clamp(16px, 2vw, 24px);
+  font-size: clamp(2.4rem, 5.6vw, 4.6rem);
+  font-weight: 870;
+  letter-spacing: -0.045em;
+  line-height: 1;
+}
+
+/* 아래 줄 오른쪽 — 연락처 */
+.closing-name {
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  font-weight: 870;
+  letter-spacing: -0.03em;
+  padding-bottom: var(--s3);
+  border-bottom: 1px solid var(--ink);
+}
+.closing-name span {
+  margin-left: 10px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+/* 이름 아래 어학 근거 한 줄 — 이름보다 약하고 연락처보다는 앞선다 */
+.closing-cert {
+  margin-top: var(--s3);
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.closing-cert span {
+  margin-left: 6px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  color: color-mix(in srgb, var(--ink-2) 78%, transparent);
+}
+
+.contact-rows { list-style: none; margin: 0; padding: 0; }
+.contact-rows li + li { border-top: 1px solid var(--hairline); }
+.contact-rows a {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: clamp(14px, 1.6vw, 18px) 2px;
+  min-height: 44px;
+  text-decoration: none;
+  color: inherit;
+}
+.contact-rows .ci {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--page);
+  transition: background-color 0.2s var(--ease-out), color 0.2s var(--ease-out);
+}
+.contact-rows .ci svg { width: 20px; height: 20px; display: block; }
+.contact-rows .ct { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.contact-rows .ct b { font-size: 0.94rem; font-weight: 800; letter-spacing: -0.01em; }
+.contact-rows .ct span {
+  font-size: 0.86rem;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+@media (hover: hover) {
+  .contact-rows a:hover .ci { background: var(--marker); color: var(--ink); }
+  .contact-rows a:hover .ct b { text-decoration: underline; text-underline-offset: 3px; }
+}
+
+/* ---- Selected Works 3열 카드 (v9) -------------------------------------- */
+/* 케이스와 달리 프로젝트는 숫자가 아니라 만든 결과물이 주인공이라, 셋을
+   같은 규격으로 세워 한 화면에서 비교되게 한다. 셋의 비주얼(밝은 앱 목업 /
+   어두운 공간 / 파란 키비주얼)이 확연히 달라 균일 그리드에서도 안 뭉개진다. */
+.work-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(30px, 3.4vw, 44px);
+  border-top: 1px solid var(--ink);
+  padding-top: clamp(20px, 3vw, 32px);
+}
+/* 4건이라 3열로 두면 마지막 한 장이 혼자 남는다 → 2열 그리고 4열 */
+@media (min-width: 640px) { .work-cards { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1080px) { .work-cards { grid-template-columns: repeat(4, 1fr); } }
+
+/* 카드 전체가 상세 페이지 링크. 안에 라이트박스 버튼을 또 두지 않는다 —
+   목적지가 둘이면 어느 쪽도 눌리지 않는다(케이스 카드와 같은 원칙). */
+.work-card {
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  color: inherit;
+}
+.work-card-media {
+  margin: 0 0 var(--s4);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.work-card-media img {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  transition: transform 0.35s var(--ease-out);
+}
+/* 사진이 없는 건(대만 시리즈) — 숫자 자체를 시각물로 세운다.
+   빈 회색 박스나 남의 이미지를 갖다 쓰는 것보다 정직하고, 이 카드에서
+   제일 중요한 정보가 마침 숫자다. */
+.work-card-media--stat {
+  aspect-ratio: 16 / 10;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  padding: clamp(20px, 2.4vw, 30px);
+  background: linear-gradient(160deg, #f2f1ec, #e9e7df);
+}
+.work-card-media--stat strong {
+  font-size: clamp(2.6rem, 4.4vw, 3.6rem);
+  font-weight: 870;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.work-card-media--stat span {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+/* AERA 카드 — 사진이 아니라 화면 3개. 같은 16:10 틀 안에 앉혀서
+   나머지 두 장과 카드 높이가 어긋나지 않게 한다. */
+.work-card-media--app {
+  aspect-ratio: 16 / 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6%;
+  background: linear-gradient(160deg, #f2f1ec, #e9e7df);
+}
+.work-card-media--app .aera-shots {
+  margin-bottom: 0;
+  gap: 5%;
+  width: 100%;
+  transition: transform 0.35s var(--ease-out);
+}
+/* 카드 폭에 비례해 세 대가 항상 같은 자리에 앉는다(뷰포트 기준 clamp는
+   3열/2열/1열에서 폭이 제각각이라 안 맞는다). */
+.work-card-media--app .aera-shots .phone,
+.work-card-media--app .aera-shots .phone:nth-child(2) { width: 26%; }
+.work-card-media--app .aera-shots .phone:nth-child(2) { width: 29%; }
+
+.work-card .work-idx { margin-bottom: var(--s2); }
+.work-card-desc {
+  margin-top: var(--s3);
+  font-size: 0.94rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.work-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: var(--s4) 0 0;
+  /* 아래 화살표(margin-top:auto)가 내용이 긴 카드에서 태그에 달라붙지
+     않도록 최소 간격을 여기서 확보한다. */
+  padding: 0 0 var(--s4);
+}
+.work-tags li {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 5px 12px;
+  background: color-mix(in srgb, #fff 55%, transparent);
+}
+/* 화살표는 카드 맨 아래 — margin-top:auto로 카드 높이가 달라도 밑선이 맞는다 */
+.work-card-go {
+  align-self: flex-end;
+  margin-top: auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+  font-weight: 700;
+  transition: background-color 0.2s var(--ease-out),
+    border-color 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+}
+@media (hover: hover) {
+  .work-card:hover .work-card-media img { transform: scale(1.035); }
+  .work-card:hover .work-card-media--app .aera-shots { transform: scale(1.03); }
+  .work-card:hover .work-title { text-decoration: underline; text-underline-offset: 4px; }
+  .work-card:hover .work-card-go {
+    transform: translateX(3px);
+    background: var(--marker);
+    border-color: var(--marker);
+  }
+}
+.work-card:focus-visible { outline: 2px solid var(--marker); outline-offset: 6px; }
+
+/* ---- Selected Cases 3열 카드 (v9) -------------------------------------- */
+/* 카드는 위(본문 2열: 텍스트 | 사진) + 아래(지표 띠) 두 덩어리다.
+   지표 띠를 따로 둔 이유: 그리드로 줄이면 제일 먼저 사라지는 게 숫자인데,
+   이 포트폴리오에서 숫자는 장식이 아니라 근거다. 띠를 카드 바닥에 고정해
+   세 카드의 숫자가 같은 높이에서 가로로 비교되게 한다. */
+.case-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(24px, 2.6vw, 32px);
+}
+@media (min-width: 720px) { .case-cards { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1040px) { .case-cards { grid-template-columns: repeat(3, 1fr); } }
+
+/* 카드 전체가 상세 페이지 링크 — 안에 라이트박스 버튼을 또 두지 않는다. */
+.case-card {
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  background: color-mix(in srgb, #fff 52%, transparent);
+  transition: border-color 0.2s var(--ease-out), box-shadow 0.25s var(--ease-out);
+}
+/* 텍스트는 왼쪽, 사진은 오른쪽 끝까지 꽉 — 카드 안에서 사진이 재단된
+   인화지처럼 보이게. flex:1로 지표 띠를 항상 바닥에 붙인다. */
+.case-card-body {
+  flex: 1;
+  display: grid;
+  /* 원본 사진이 세로 0.6~0.65 비율이라, 사진 칸이 좁고 카드가 높을수록
+     좌우가 크게 잘린다. 칸을 넓히고(≈0.95fr) 텍스트 쪽 세로 리듬을
+     조여서 사진 칸 비율을 원본에 가깝게 끌어올린다. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.95fr);
+}
+.case-card-text {
+  display: flex;
+  flex-direction: column;
+  padding: clamp(18px, 1.9vw, 22px);
+  padding-right: clamp(12px, 1.3vw, 15px);
+}
+/* 큰 고스트 번호 — 케이스 순서를 0.3초에 잡게 한다 */
+.case-card-no {
+  font-size: clamp(2rem, 2.9vw, 2.6rem);
+  font-weight: 870;
+  line-height: 0.82;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+.case-card-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: clamp(14px, 1.7vw, 20px);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: var(--ink-2);
+}
+/* 섹션 킥커와 같은 형광펜 획 — 카드 안에서도 같은 서명을 쓴다 */
+.case-card-kicker::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 7px;
+  background: var(--marker);
+  transform: skewX(-14deg);
+}
+.case-card-title {
+  margin-top: 14px;
+  font-size: clamp(1.02rem, 1.4vw, 1.2rem);
+  letter-spacing: -0.03em;
+  line-height: 1.3;
+}
+.case-card-desc {
+  margin-top: 12px;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.case-card-shot { margin: 0; overflow: hidden; }
+.case-card-shot img {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: cover;
+  /* 01은 프로필 화면이라 위쪽(팔로워·좋아요 수치)이 잘리면 안 된다.
+     02·03은 사진이라 중앙이 낫다. */
+  object-position: 50% 50%;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  transition: transform 0.4s var(--ease-out);
+}
+#case-market .case-card-shot img { object-position: 50% 0%; }
+
+/* 지표 띠 — 카드 바닥 고정 */
+.case-card-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: clamp(14px, 1.6vw, 18px) clamp(20px, 2.2vw, 26px);
+  border-top: 1px solid var(--hairline);
+  background: color-mix(in srgb, #fff 40%, transparent);
+}
+.case-card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px clamp(14px, 1.6vw, 22px);
+}
+.case-card-stats .n {
+  display: block;
+  font-size: clamp(0.95rem, 1.2vw, 1.12rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.case-card-stats .l {
+  display: block;
+  margin-top: 5px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+.case-card-go {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  font-weight: 700;
+  transition: background-color 0.2s var(--ease-out),
+    border-color 0.2s var(--ease-out), transform 0.2s var(--ease-out);
+}
+@media (hover: hover) {
+  .case-card:hover {
+    border-color: color-mix(in srgb, var(--ink) 28%, transparent);
+    box-shadow: 0 8px 26px rgba(19, 19, 19, 0.08);
+  }
+  .case-card:hover .case-card-shot img { transform: scale(1.04); }
+  .case-card:hover .case-card-title { text-decoration: underline; text-underline-offset: 4px; }
+  .case-card:hover .case-card-go {
+    background: var(--marker);
+    border-color: var(--marker);
+    transform: translateX(3px);
+  }
+}
+.case-card:focus-visible { outline: 2px solid var(--marker); outline-offset: 4px; }
+
+/* 좁은 화면: 사진을 위로 올리고 텍스트를 아래로 — 옆으로 쪼개면 둘 다 좁다 */
+@media (max-width: 719px) {
+  .case-card-body { grid-template-columns: 1fr; }
+  .case-card-text { order: 2; padding-right: clamp(20px, 2.2vw, 26px); }
+  .case-card-shot { order: 1; }
+  .case-card-shot img { min-height: 0; aspect-ratio: 16 / 10; height: auto; }
+}
+
+/* 제목·설명·태그 길이가 카드마다 달라서 각 요소가 다른 높이에서 시작한다.
+   subgrid로 카드의 여섯 덩어리(사진/번호/제목/설명/태그/화살표)를 부모 그리드의
+   같은 행에 물려, 한 줄에 놓인 카드끼리 모든 요소가 같은 라인에 서게 한다.
+
+   4열(카드 4장이 한 줄)일 때만 켠다. 2열이면 카드 줄이 둘이 되는데,
+   행 간격을 0으로 두면 두 줄이 붙고, 0이 아니면 그 간격이 카드 안쪽
+   여섯 행 사이에도 전부 끼어들어 카드가 늘어난다.
+   미지원 브라우저에서는 @supports 때문에 규칙이 통째로 빠지고 위의 flex
+   레이아웃이 그대로 동작한다(내용이 사라지는 사고가 없다). */
+@supports (grid-template-rows: subgrid) {
+  @media (min-width: 1080px) {
+    .work-cards { grid-template-rows: repeat(6, auto); row-gap: 0; }
+    .work-card {
+      display: grid;
+      grid-template-rows: subgrid;
+      grid-row: span 6;
+    }
+    /* flex 컬럼에서 쓰던 정렬을 그리드 축에 맞게 옮긴다 */
+    .work-card-go { margin-top: 0; justify-self: end; align-self: end; }
+    /* 태그 줄이 늘어난 행 높이만큼 세로로 늘어나지 않게 */
+    .work-tags { align-items: flex-start; align-content: flex-start; }
+  }
+}
